@@ -31,8 +31,8 @@ public:
     File* mFile;
     Page* mWriteBuffer;
     Page* mReadBuffer;
-    Record* mCurrentRecord;
     bool mIsWriteBufferDirty;
+    bool mIsWriteAtLastpage;
     int mPageIndex;
 };
 #endif

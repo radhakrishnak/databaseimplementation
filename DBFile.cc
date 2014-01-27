@@ -13,16 +13,15 @@ using namespace std;
 
 // stub file .. replace it with your own DBFile.cc
 
-DBFile::DBFile (): mPageIndex(0), mIsWriteBufferDirty(false){
+DBFile::DBFile (): mPageIndex(0), mIsWriteBufferDirty(false),
+                        mIsWriteAtLastpage(false){
     mFile = new File();
     mWriteBuffer = new Page();
     mReadBuffer = new Page();
-    mCurrentRecord = new Record();
 }
 
 // Destructor
 DBFile::~DBFile () {
-    delete mCurrentRecord;
     delete mReadBuffer;
     delete mWriteBuffer;
     delete mFile;
@@ -33,9 +32,9 @@ int DBFile::Create (char *f_path, fType f_type, void *startup) {
     switch(f_type){
     case heap:
         {
-            cout<<"creating heap file..."<<endl;
+            cout<<"creating heap file.."<<endl;
             mFile->Open(0, f_path);
-            cout<<"created heap file"<<endl;
+            cout<<"created heap file: "<<f_path<<endl;
             break;
         }
     case sorted:
@@ -52,7 +51,7 @@ int DBFile::Create (char *f_path, fType f_type, void *startup) {
         cout<<"File type not valid!"<<endl;
         lResult = 0;
     }
-    mFile->Close();
+    //mFile->Close();
     return lResult;
 }
 
@@ -63,9 +62,13 @@ void DBFile::Load (Schema &f_schema, char *loadpath) {
         exit(1);
     }
     Record lTempRecord;
+    int count = 0;
     while(lTempRecord.SuckNextRecord(&f_schema, loadFile)){
+        lTempRecord.Print(&f_schema);
         Add(lTempRecord);
+        ++count;
     }
+    cout<<"Loaded "<<count<<" records from text file"<<endl;
     fclose(loadFile);
 }
 
@@ -73,47 +76,66 @@ int DBFile::Open (char *f_path) {
     if(f_path == NULL) {
         return 0;
     }
-    cout<<"Opening the file "<<f_path<<endl;
+    cout<<"Opening file : "<<f_path<<endl;
     mFile->Open(1, f_path);
-    // read buffer points to first of file
-    mFile->GetPage(mReadBuffer, 0);
-    // write buffer points to last of file
-    mFile->GetPage(mWriteBuffer, mFile->GetLength());
+
+    mIsWriteAtLastpage = true;
     return 1;
 }
 
 void DBFile::MoveFirst () {
+    // Empty read buffer
+    mReadBuffer->EmptyItOut();
     // Get the first page and put it in mWriteBuffer
-    mFile->GetPage (mReadBuffer, 1);
+    mFile->GetPage (mReadBuffer, 0);
     // Get the first record and put it in mCurrentRecord
-    mReadBuffer->GetFirst(mCurrentRecord);
     mPageIndex = 0;
 }
 
 int DBFile::Close () {
+    // if write buffer is dirty, write it to new page
+
+    if(mIsWriteBufferDirty){
+        cout<<"In DBFile close: write buffer is dirty"<<endl;
+        if(mIsWriteAtLastpage){
+            cout<<"write is last page, overwriting.."<<endl;
+            mFile->AddPage(mWriteBuffer, mFile->GetLength()-1);
+        } else {
+            cout<<"write is not at last page, writing to new page.."<<endl;
+            mFile->AddPage(mWriteBuffer, mFile->GetLength());
+        }
+        mWriteBuffer->EmptyItOut();
+        mIsWriteBufferDirty = 0;
+        mIsWriteAtLastpage = false;
+    }
+
+    // empty out write buffer
+    mWriteBuffer->EmptyItOut();
     mFile->Close();
+    return 1;
 }
 
 void DBFile::Add (Record &rec) {
+
+    cout<<"\nInside DBFile Add method"<<endl;
     Record lTemp;
-    lTemp.Consume(&rec);
-    int lAddResult = mWriteBuffer->Append(&lTemp);
-    if(!lAddResult){
-        cout<<"Record cannot fit into current page.."<<endl;
-        cout<<"Writing to the disk"<<endl;
-        mFile->AddPage(mWriteBuffer, mFile->GetLength());
-        // Empty the page out
-        mWriteBuffer->EmptyItOut();
-        // add the record to the buffer
-        mWriteBuffer->Append(&lTemp);
-    }
+    lTemp.Copy(&rec);
+	if(mWriteBuffer->Append(&rec)==0) {
+	    mFile->AddPage(mWriteBuffer, mFile->GetLength()-1);
+		mWriteBuffer->EmptyItOut();
+		mWriteBuffer->Append(&lTemp);
+	}
     mIsWriteBufferDirty = 1;
 }
 
 int DBFile::GetNext (Record &fetchme) {
+    // if no records present in read buffer
 
-    if(mReadBuffer->GetFirst(&fetchme) == 0){ // if no records present in read buffer
-        mPageIndex++;
+    if(mReadBuffer->GetFirst(&fetchme) == 0){
+        //++mPageIndex;
+        if(++mPageIndex >= mFile->GetLength()-1){
+            return 0;
+        }
         // read next page
         mReadBuffer->EmptyItOut();
         mFile->GetPage(mReadBuffer, mPageIndex);
@@ -124,4 +146,15 @@ int DBFile::GetNext (Record &fetchme) {
 }
 
 int DBFile::GetNext (Record &fetchme, CNF &cnf, Record &literal) {
+    // create a comparison engine
+    ComparisonEngine comparisionEngine;
+	do {
+    	int lTemp = GetNext(fetchme);
+		if (lTemp == 0) {
+		// finished reading the entire file
+			return 0;
+		}
+	} while (!comparisionEngine.Compare(&fetchme, &literal, &cnf));
+
+	return 1;
 }
